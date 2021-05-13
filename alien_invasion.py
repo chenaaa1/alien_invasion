@@ -1,8 +1,13 @@
 import sys  # sys模块包含了与Python解释器和它的环境有关的函数。
+from time import sleep      # time是python标准库,sleep()函数可以让游戏暂停
 
 import pygame   # 导入游戏显示的包
 
+
 from settings import Settings
+from game_stats import GameStats
+from scoreboard import Scoreboard
+from button import Button
 from ship import Ship   # 头部写完后最好隔两行再写类
 from bullet import Bullet  # 导入Buttle类
 from alien import Alien  # 导入外星人
@@ -25,12 +30,20 @@ class AlienInvasion:
         pygame.display.set_caption("Alien Invasion")
         # display.set_caption是在游戏上方显示的字体相当于游戏名吧
 
+        # 创建一个用于存储游戏统计信息的实例
+        # 并创建记分牌
+        self.stats = GameStats(self)
+        self.sb = Scoreboard(self)
+
         self.ship = Ship(self)
         # 因为Ship类导入了pygame吧，所以后面才带个括号里面有self
         self.bullets = pygame.sprite.Group()    # pygame.sprite.Group是pygame的一个函数，功能类似于列表
         self.aliens = pygame.sprite.Group()  # 创建一个用于存储外星人群的编组
 
         self._create_fleet()
+
+        # 创建play按钮
+        self.play_button = Button(self, "play")     # "play"则是文本，即msg
 
         # 设置背景色
         self.bg_color = (230,230,230)   # 这里的数值代表颜色，不用太在意
@@ -88,9 +101,12 @@ class AlienInvasion:
         """开始游戏的主循环"""
         while True: # 保证游戏的持续进行
             self._check_events()    # 监视键盘和鼠标事件
-            self.ship.update()  # Ship类中的一个函数，令飞船移动位置
-            self._update_bullets()   # 子弹的更新
-            self._update_aliens()
+
+            if self.stats.game_active:
+                self.ship.update()  # Ship类中的一个函数，令飞船移动位置
+                self._update_bullets()   # 子弹的更新
+                self._update_aliens()
+
             self._update_screen()   # 在游戏运行时时刻更新屏幕
 
     def _check_events(self):
@@ -102,6 +118,37 @@ class AlienInvasion:
                 self._check_keydown_events(event)
             elif event.type == pygame.KEYUP:    # KEYUP为用户松开按键
                 self._check_keyup_events(event)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                mouse_pos = pygame.mouse.get_pos()
+                # pygame.mouse.get_pos返回一个元组，包含单击时鼠标的x和y坐标
+                self._check_play_button(mouse_pos)
+
+    def _check_play_button(self, mouse_pos):
+        """在玩家单击play按钮时开始游戏"""
+        button_clicked = self.play_button.rect.collidepoint(mouse_pos)
+        # rect的方法collidepoint检查鼠标单击位置是否在play按钮的rect内
+        if button_clicked and not self.stats.game_active:
+            # 重置游戏设置
+            self.settings.initialize_dynamic_settings()
+            # initialize_dynamic_settings这个方法有点奇怪
+
+            # 重置游戏统计信息
+            self.stats.reset_stats()    # reset_stats是重置游戏统计信息
+            self.stats.game_active = True
+            self.sb.prep_score()
+            self.sb.prep_level()
+            self.sb.prep_ships()
+
+            # 清空余下的外星人和子弹
+            self.aliens.empty()
+            self.bullets.empty()
+
+            # 创建一群新的外星人并让飞船居中
+            self._create_fleet()
+            self.ship.center_ship()
+
+            # 隐藏鼠标光标
+            pygame.mouse.set_visible(False)
 
     def _check_keydown_events(self, event):
         """响应按键"""
@@ -135,6 +182,13 @@ class AlienInvasion:
             bullet.draw_bullet()
         self.aliens.draw(self.screen)   # draw是一个方法
 
+        # 显示得分
+        self.sb.show_score()
+
+        # 如果游戏处于非活动状态，就绘制play按钮
+        if not self.stats.game_active:
+            self.play_button.draw_button()
+
         # 让最近绘制的屏幕可见
         pygame.display.flip()
         # pygame.display.flip这也是pygame的一个函数
@@ -152,7 +206,34 @@ class AlienInvasion:
             # python中可变对象传引用（如字典，列表），不可变对象传值（如数字，字符串）
             if bullet.rect.bottom <= 0:
                 self.bullets.remove(bullet)  # remove是系统的方法
-        
+
+        self._check_bullet_alien_collisions()
+
+    def _check_bullet_alien_collisions(self):
+        """响应子弹和外星人碰撞"""
+        # 检查是否有子弹击中了外星人
+        # 如果是，就删除相应的子弹和外星人
+        # sprite.groupcollide是pygame的一个函数,用来将2个rect进行比较生成字典，键为子弹，值为alien
+        # 前面两个是删除对象，后面的true代表删除操作，改为flase则不会被删除
+        collisions = pygame.sprite.groupcollide(
+            self.bullets, self.aliens, True, True)
+        if collisions:
+            for aliens in collisions.values():
+                self.stats.score += self.settings.alien_points * len(aliens)
+                # 一个子弹可能会击中多个敌人，所以有len
+            self.sb.prep_score()    # 更新得分
+            self.sb.check_high_score()
+
+        if not self.aliens:
+            # 删除现有的子弹并新建一群外星人,if not 这个有点nb
+            self.bullets.empty()    # 删除当前所有子弹，虽然不知道有什么用
+            self._create_fleet()    # _create_fleet是一个方法,重新显示一群外星人
+            self.settings.increase_speed()
+
+            # 提高等级
+            self.stats.level += 1
+            self.sb.prep_level()
+
 
     def _update_aliens(self):
         """检查是否有外星人位于屏幕边缘，并更新整群外星人位置"""
@@ -160,6 +241,45 @@ class AlienInvasion:
         # 对编组调用方法update()，这将自动对每个外星人调用方法update()
         self.aliens.update()
 
+        # 检测外星人和飞船之间的碰撞
+        # sprite.spritecollideany是pygame的函数，接受一个精灵一个编组，时刻遍历编组，检查2者是否发生碰撞，若是则返回与
+        # 精灵碰撞的成员且停止遍历编组，反之返回none
+        if pygame.sprite.spritecollideany(self.ship, self.aliens):
+            self._ship_hit()
+
+        # 检查是否有外星人到达了屏幕底端
+        self._check_aliens_bottom()
+
+    def _ship_hit(self):
+        """响应外星飞船被外星人撞倒"""
+
+        if self.stats.ships_left > 0:
+            # 将ship_left减1并更新记分牌
+            self.stats.ships_left -= 1  # 将余下飞船数减1
+            self.sb.prep_ships()    # 更新记分牌
+
+            # 清空余下的外星人和子弹
+            self.aliens.empty()     # empty是方法
+            self.bullets.empty()
+
+            # 创建一群新的外星人，并将飞船放到屏幕底部的中央
+            self._create_fleet()
+            self.ship.center_ship()
+
+            # 暂停
+            sleep(0.9)  # sleep是功能函数
+        else:
+            self.stats.game_active = False
+            pygame.mouse.set_visible(True)  # 游戏结束后重新显示play光标
+
+    def _check_aliens_bottom(self):
+        """检查是否有外星人到达了屏幕底端"""
+        screen_rect = self.screen.get_rect()    # self.screen.get_rect是整个屏幕的大小
+        for alien in self.aliens.sprites():
+            if alien.rect.bottom >= screen_rect.bottom:     # 到达屏幕底部
+                # 像飞船被撞到一样处理
+                self._ship_hit()
+                break
 
 
 if __name__ == '__main__':
